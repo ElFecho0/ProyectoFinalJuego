@@ -1,7 +1,10 @@
 package com.atraparalagato.controller;
 
 import com.atraparalagato.example.service.ExampleGameService;
+import com.atraparalagato.impl.model.HexGameState;
 import com.atraparalagato.impl.model.HexPosition;
+import com.atraparalagato.impl.service.HexGameService;
+
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -22,8 +25,8 @@ import java.util.Optional;
 @CrossOrigin(origins = "*")
 public class GameController {
     
-    @Value("${game.use-example-implementation:true}")
-    private boolean useExampleImplementation;
+    @Value("${game.use-example-implementation:false}")
+    private boolean useExampleImplementation = false; // Por defecto, usa implementación de estudiantes
     
     private final ExampleGameService exampleGameService;
     
@@ -205,26 +208,42 @@ public class GameController {
     
     // Métodos privados para implementación de estudiantes (placeholder)
     
+    private final HexGameService hexGameService = new HexGameService();
+    
     private ResponseEntity<Map<String, Object>> startGameWithStudentImplementation(int boardSize) {
-        // TODO: Los estudiantes deben implementar esto usando sus propias clases
-        return ResponseEntity.ok(Map.of(
-            "error", "Student implementation not available yet",
-            "message", "Los estudiantes deben completar sus implementaciones en el paquete 'impl'",
-            "implementation", "impl"
-        ));
-    }
+    HexGameState gameState = hexGameService.createGame(boardSize, "normal", new HashMap<>());
+    Map<String, Object> response = new HashMap<>();
+    response.put("gameId", gameState.getGameId());
+    response.put("status", gameState.getStatus().toString());
+    response.put("catPosition", Map.of("q", gameState.getCatPosition().getQ(), "r", gameState.getCatPosition().getR()));
+    response.put("blockedCells", gameState.getBoard().getBlockedHexPositions());
+    response.put("movesCount", gameState.getMoveCount());
+    response.put("boardSize", boardSize);
+    response.put("implementation", "impl");
+    return ResponseEntity.ok(response);
+}
     
     private ResponseEntity<Map<String, Object>> blockPositionWithStudentImplementation(String gameId, HexPosition position) {
-        // TODO: Los estudiantes deben implementar esto usando sus propias clases
-        return ResponseEntity.ok(Map.of(
-            "error", "Student implementation not available yet",
-            "message", "Los estudiantes deben completar sus implementaciones en el paquete 'impl'",
-            "implementation", "impl"
-        ));
+    // Puedes obtener el playerId de la sesión, request, o usar uno fijo para pruebas
+    String playerId = "jugador"; // Cambia esto según tu lógica real
+
+    Optional<HexGameState> gameStateOpt = hexGameService.executePlayerMove(gameId, position, playerId);
+    if (gameStateOpt.isEmpty()) {
+        return ResponseEntity.notFound().build();
     }
+    HexGameState gameState = gameStateOpt.get();
+    Map<String, Object> response = new HashMap<>();
+    response.put("gameId", gameState.getGameId());
+    response.put("status", gameState.getStatus().toString());
+    response.put("catPosition", Map.of("q", gameState.getCatPosition().getQ(), "r", gameState.getCatPosition().getR()));
+    response.put("blockedCells", gameState.getBoard().getBlockedHexPositions());
+    response.put("movesCount", gameState.getMoveCount());
+    response.put("boardSize", gameState.getBoardSize());
+    response.put("implementation", "impl");
+    return ResponseEntity.ok(response);
+}
     
     private ResponseEntity<Map<String, Object>> getGameStateWithStudentImplementation(String gameId) {
-        // TODO: Los estudiantes deben implementar esto usando sus propias clases
         return ResponseEntity.ok(Map.of(
             "error", "Student implementation not available yet",
             "message", "Los estudiantes deben completar sus implementaciones en el paquete 'impl'",
