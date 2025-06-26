@@ -1,17 +1,19 @@
 package com.atraparalagato.impl.service;
-
 import com.atraparalagato.base.service.GameService;
 import com.atraparalagato.base.model.GameState;
+import com.atraparalagato.base.model.GameState.GameStatus;
 import com.atraparalagato.base.model.GameBoard;
 import com.atraparalagato.base.strategy.CatMovementStrategy;
 import com.atraparalagato.impl.model.HexPosition;
 import com.atraparalagato.impl.model.HexGameState;
 import com.atraparalagato.impl.model.HexGameBoard;
-
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-
+import com.atraparalagato.impl.strategy.BFSCatMovement;
+import com.atraparalagato.impl.strategy.AStarCatMovement;
+import com.atraparalagato.impl.repository.H2GameRepository;
+import java.util.*;
+import java.util.function.Supplier;
+import java.util.function.Function; 
+import com.atraparalagato.base.repository.DataRepository;
 /**
  * Implementación esqueleto de GameService para el juego hexagonal.
  * 
@@ -25,230 +27,330 @@ import java.util.Optional;
  * - Integración con repositorio y estrategias
  */
 public class HexGameService extends GameService<HexPosition> {
-    
-    // TODO: Los estudiantes deben inyectar dependencias
-    // Ejemplos: repository, movementStrategy, validator, etc.
-    
+    private final H2GameRepository gameRepository;
+    private final Supplier<String> gameIdGenerator;
     public HexGameService() {
         // TODO: Los estudiantes deben inyectar las dependencias requeridas
-        super(
-            null, // gameBoard - TODO: Crear HexGameBoard
-            null, // movementStrategy - TODO: Crear estrategia de movimiento
-            null, // gameRepository - TODO: Crear repositorio
-            null, // gameIdGenerator - TODO: Crear generador de IDs
-            null, // boardFactory - TODO: Crear factory de tableros
-            null  // gameStateFactory - TODO: Crear factory de estados
+        this(
+            new HexGameBoard(11),
+            new BFSCatMovement(new HexGameBoard(11)),
+            new H2GameRepository(),
+            () -> UUID.randomUUID().toString(),
+            HexGameBoard::new,
+            id -> new HexGameState(id, 11)
         );
-        // TODO: Inicializar dependencias y configuración
-        // Pista: Usar el patrón Factory para crear componentes
-        throw new UnsupportedOperationException("Los estudiantes deben implementar el constructor");
     }
-    
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    public HexGameService(
+        HexGameBoard board,
+        CatMovementStrategy<HexPosition> movementStrategy,
+        H2GameRepository repository,
+        Supplier<String> idGenerator,
+        Function<Integer, GameBoard<HexPosition>> boardFactory,
+        Function<String, GameState<HexPosition>> gameStateFactory
+    ) {
+        super(
+            board,
+            movementStrategy,
+            (DataRepository) repository,
+            idGenerator,
+            boardFactory,
+            gameStateFactory
+        );
+        this.gameRepository = repository;
+        this.gameIdGenerator = idGenerator;
+    }
+
     /**
      * TODO: Crear un nuevo juego con configuración personalizada.
      * Debe ser más sofisticado que ExampleGameService.
      */
     public HexGameState createGame(int boardSize, String difficulty, Map<String, Object> options) {
         // TODO: Implementar creación de juego avanzada
-        // Considerar:
-        // 1. Validar parámetros de entrada
-        // 2. Crear tablero según dificultad
-        // 3. Configurar estrategia del gato según dificultad
-        // 4. Inicializar estado del juego
-        // 5. Guardar en repositorio
-        // 6. Configurar callbacks y eventos
-        throw new UnsupportedOperationException("Los estudiantes deben implementar createGame");
+        if (boardSize < 3) throw new IllegalArgumentException("El tamaño mínimo es 3");
+        String gameId = gameIdGenerator.get();
+        HexGameBoard board = new HexGameBoard(boardSize);
+        CatMovementStrategy<HexPosition> strategy = createMovementStrategy(difficulty, board);
+        HexGameState gameState = new HexGameState(gameId, boardSize);
+        gameState.setBoard(board);
+        gameState.setDifficulty(difficulty);
+        gameState.setCatMovementStrategy(strategy);
+        gameState.setOnStateChanged(this::onGameStateChanged);
+        gameState.setOnGameEnded(this::onGameEnded);
+        gameRepository.save(gameState);
+        return gameState;
     }
-    
+
     /**
      * TODO: Ejecutar movimiento del jugador con validaciones avanzadas.
      */
     public Optional<HexGameState> executePlayerMove(String gameId, HexPosition position, String playerId) {
         // TODO: Implementar movimiento del jugador
-        // Considerar:
-        // 1. Validar que el juego existe y está activo
-        // 2. Validar que el jugador puede hacer el movimiento
-        // 3. Validar la posición según reglas del juego
-        // 4. Ejecutar el movimiento
-        // 5. Mover el gato usando estrategia apropiada
-        // 6. Actualizar estado del juego
-        // 7. Guardar cambios en repositorio
-        // 8. Notificar eventos
-        throw new UnsupportedOperationException("Los estudiantes deben implementar executePlayerMove");
+        Optional<HexGameState> optState = gameRepository.findById(gameId);
+        if (optState.isEmpty()) return Optional.empty();
+        HexGameState state = optState.get();
+        if (state.isGameFinished()) return Optional.of(state);
+        state.makeMove(position, playerId);
+        // el gato se mueve estrategicamente
+        executeCatMove(state, state.getDifficulty());
+        //refresh del mapa y guardar el estado
+        gameRepository.save(state);
+        notifyGameEvent(gameId, "playerMove", Map.of("position", position, "playerId", playerId));
+        return Optional.of(state);
     }
-    
+
     /**
      * TODO: Obtener estado del juego con información enriquecida.
      */
     public Optional<Map<String, Object>> getEnrichedGameState(String gameId) {
         // TODO: Obtener estado enriquecido del juego
-        // Incluir:
-        // 1. Estado básico del juego
-        // 2. Estadísticas avanzadas
-        // 3. Sugerencias de movimiento
-        // 4. Análisis de la partida
-        // 5. Información del tablero
-        throw new UnsupportedOperationException("Los estudiantes deben implementar getEnrichedGameState");
+        return gameRepository.findById(gameId).map(state -> {
+            Map<String, Object> map = new HashMap<>();
+            map.put("gameState", state);
+            map.put("statistics", getGameStatistics(gameId));
+            map.put("suggestedMove", getSuggestedMove(gameId).orElse(null));
+            map.put("board", state.getBoard());
+            map.put("moveHistory", state.getMoveHistory());
+            return map;
+        });
     }
-    
+
     /**
      * TODO: Obtener sugerencia inteligente de movimiento.
      */
     public Optional<HexPosition> getIntelligentSuggestion(String gameId, String difficulty) {
         // TODO: Generar sugerencia inteligente
-        // Considerar:
-        // 1. Analizar estado actual del tablero
-        // 2. Predecir movimientos futuros del gato
-        // 3. Evaluar múltiples opciones
-        // 4. Retornar la mejor sugerencia según dificultad
-        throw new UnsupportedOperationException("Los estudiantes deben implementar getIntelligentSuggestion");
+        Optional<HexGameState> optState = gameRepository.findById(gameId);
+        if (optState.isEmpty()) return Optional.empty();
+        HexGameState state = optState.get();
+        List<HexPosition> candidates = state.getBoard().getAllAvailablePositions();
+        return candidates.stream()
+                .max(Comparator.comparing(pos ->
+                        state.getBoard().getAllBorderPositions().stream()
+                                .mapToDouble(border -> pos.distanceTo(border))
+                                .min()
+                                .orElse(Double.MAX_VALUE)
+                ));
     }
-    
+
     /**
      * TODO: Analizar la partida y generar reporte.
      */
     public Map<String, Object> analyzeGame(String gameId) {
         // TODO: Generar análisis completo de la partida
-        // Incluir:
-        // 1. Eficiencia de movimientos
-        // 2. Estrategia utilizada
-        // 3. Momentos clave de la partida
-        // 4. Sugerencias de mejora
-        // 5. Comparación con partidas similares
-        throw new UnsupportedOperationException("Los estudiantes deben implementar analyzeGame");
+        Optional<HexGameState> optState = gameRepository.findById(gameId);
+        Map<String, Object> analysis = new HashMap<>();
+        optState.ifPresent(state -> {
+            analysis.put("moves", state.getMoveHistory());
+            analysis.put("winner", state.getWinner());
+            analysis.put("totalMoves", state.getMoveHistory().size());
+            analysis.put("difficulty", state.getDifficulty());
+        });
+        return analysis;
     }
-    
+
     /**
      * TODO: Obtener estadísticas globales del jugador.
      */
     public Map<String, Object> getPlayerStatistics(String playerId) {
         // TODO: Calcular estadísticas del jugador
-        // Incluir:
-        // 1. Número de partidas jugadas
-        // 2. Porcentaje de victorias
-        // 3. Puntuación promedio
-        // 4. Tiempo promedio por partida
-        // 5. Progresión en el tiempo
-        throw new UnsupportedOperationException("Los estudiantes deben implementar getPlayerStatistics");
+        long total = gameRepository.countWhere(g -> g.getPlayerId().equals(playerId));
+        long won = gameRepository.countWhere(g -> g.getPlayerId().equals(playerId) && g.hasPlayerWon());
+        Map<String, Object> stats = new HashMap<>();
+        stats.put("gamesPlayed", total);
+        stats.put("gamesWon", won);
+        stats.put("winRate", total > 0 ? (double) won / total * 100 : 0);
+        return stats;
     }
-    
+
     /**
      * TODO: Configurar dificultad del juego.
      */
     public void setGameDifficulty(String gameId, String difficulty) {
         // TODO: Cambiar dificultad del juego
-        // Afectar:
-        // 1. Estrategia de movimiento del gato
-        // 2. Tiempo límite por movimiento
-        // 3. Ayudas disponibles
-        // 4. Sistema de puntuación
-        throw new UnsupportedOperationException("Los estudiantes deben implementar setGameDifficulty");
+        gameRepository.findById(gameId).ifPresent(state -> {
+            state.setDifficulty(difficulty);
+            state.setCatMovementStrategy(createMovementStrategy(difficulty, state.getBoard()));
+            gameRepository.save(state);
+        });
     }
-    
+
     /**
      * TODO: Pausar/reanudar juego.
      */
     public boolean toggleGamePause(String gameId) {
         // TODO: Manejar pausa del juego
-        // Considerar:
-        // 1. Guardar timestamp de pausa
-        // 2. Actualizar estado del juego
-        // 3. Notificar cambio de estado
-        throw new UnsupportedOperationException("Los estudiantes deben implementar toggleGamePause");
+        Optional<HexGameState> optState = gameRepository.findById(gameId);
+        if (optState.isEmpty()) return false;
+        HexGameState state = optState.get();
+        state.setPaused(!state.isPaused());
+        gameRepository.save(state);
+        notifyGameEvent(gameId, "pauseToggled", Map.of("paused", state.isPaused()));
+        return state.isPaused();
     }
-    
+
     /**
      * TODO: Deshacer último movimiento.
      */
     public Optional<HexGameState> undoLastMove(String gameId) {
         // TODO: Implementar funcionalidad de deshacer
-        // Considerar:
-        // 1. Mantener historial de movimientos
-        // 2. Restaurar estado anterior
-        // 3. Ajustar puntuación
-        // 4. Validar que se puede deshacer
-        throw new UnsupportedOperationException("Los estudiantes deben implementar undoLastMove");
+        Optional<HexGameState> optState = gameRepository.findById(gameId);
+        if (optState.isEmpty()) return Optional.empty();
+        HexGameState state = optState.get();
+        if (!state.canUndo()) return Optional.of(state);
+        state.undoLastMove();
+        gameRepository.save(state);
+        notifyGameEvent(gameId, "undo", Map.of());
+        return Optional.of(state);
     }
-    
+
     /**
      * TODO: Obtener ranking de mejores puntuaciones.
      */
     public List<Map<String, Object>> getLeaderboard(int limit) {
         // TODO: Generar tabla de líderes
-        // Incluir:
-        // 1. Mejores puntuaciones
-        // 2. Información del jugador
-        // 3. Fecha de la partida
-        // 4. Detalles de la partida
-        throw new UnsupportedOperationException("Los estudiantes deben implementar getLeaderboard");
+        return gameRepository.findAllSorted(HexGameState::getScore, false).stream()
+                .limit(limit)
+                .map(state -> {
+                    Map<String, Object> entry = new HashMap<>();
+                    entry.put("playerId", state.getPlayerId());
+                    entry.put("score", state.getScore());
+                    entry.put("date", state.getCreatedAt());
+                    entry.put("moves", state.getMoveHistory().size());
+                    return entry;
+                }).toList();
     }
-    
+
     // Métodos auxiliares que los estudiantes pueden implementar
-    
+    private boolean isCatTrapped(HexGameState gameState) {
+        HexPosition cat = gameState.getCatPosition();
+        List<HexPosition> adj = gameState.getBoard().getAdjacentPositions(cat);
+        return adj.isEmpty() || adj.stream().allMatch(gameState.getBoard()::isBlocked);
+    }
+
+    private boolean isCatAtBorder(HexGameState gameState) {
+        HexPosition cat = gameState.getCatPosition();
+        int size = gameState.getBoardSize();
+        int q = cat.getQ(), r = cat.getR(), s = cat.getS();
+        return Math.abs(q) == size || Math.abs(r) == size || Math.abs(s) == size;
+    }
+
     /**
      * TODO: Validar movimiento según reglas avanzadas.
      */
     private boolean isValidAdvancedMove(HexGameState gameState, HexPosition position, String playerId) {
-        throw new UnsupportedOperationException("Método auxiliar para implementar");
+        return !gameState.getBoard().isBlocked(position)
+                && !gameState.isGameFinished()
+                && !position.equals(gameState.getCatPosition());
     }
-    
+
     /**
      * TODO: Ejecutar movimiento del gato usando estrategia apropiada.
      */
     private void executeCatMove(HexGameState gameState, String difficulty) {
-        throw new UnsupportedOperationException("Método auxiliar para implementar");
+        Object strategy = gameState.getCatMovementStrategy();
+        HexPosition catPos = gameState.getCatPosition();
+        List<HexPosition> possibleMoves;
+        Optional<HexPosition> move;
+    if (isCatTrapped(gameState)) {
+        gameState.setGameStatus(GameStatus.PLAYER_WON); 
+    } else if (isCatAtBorder(gameState)) {
+        gameState.setGameStatus(GameStatus.PLAYER_LOST);
     }
-    
+        if (strategy == null) {
+        System.out.println("⚠️ catMovementStrategy es null, el gato no se moverá.");
+        return;
+    }
+        if (strategy instanceof BFSCatMovement bfs) {
+            possibleMoves = bfs.getPossibleMoves(catPos);
+            move = bfs.selectBestMove(possibleMoves, catPos, getTargetPosition(gameState));
+        } else if (strategy instanceof AStarCatMovement astar) {
+            possibleMoves = astar.getPossibleMoves(catPos);
+            move = astar.selectBestMove(possibleMoves, catPos, getTargetPosition(gameState));
+        } else {
+            possibleMoves = new ArrayList<>();
+            move = Optional.empty();
+        }
+        System.out.println("Posición del gato antes de mover: " + catPos);
+        move.ifPresent(gameState::setCatPosition);
+        System.out.println("Posición del gato después de mover: " + gameState.getCatPosition());
+    }
+
     /**
      * TODO: Calcular puntuación avanzada.
      */
+    @SuppressWarnings("unused")
     private int calculateAdvancedScore(HexGameState gameState, Map<String, Object> factors) {
-        throw new UnsupportedOperationException("Método auxiliar para implementar");
+        int base = gameState.getMoveHistory().size();
+        int diff = "hard".equalsIgnoreCase(gameState.getDifficulty()) ? 10 : 0;
+        return base + diff;
     }
-    
+
     /**
      * TODO: Notificar eventos del juego.
      */
     private void notifyGameEvent(String gameId, String eventType, Map<String, Object> eventData) {
-        throw new UnsupportedOperationException("Método auxiliar para implementar");
+        System.out.printf("Evento [%s] en juego %s: %s%n", eventType, gameId, eventData);
     }
-    
+
     /**
      * TODO: Crear factory de estrategias según dificultad.
      */
-    private CatMovementStrategy createMovementStrategy(String difficulty, HexGameBoard board) {
-        throw new UnsupportedOperationException("Método auxiliar para implementar");
+    private CatMovementStrategy<HexPosition> createMovementStrategy(String difficulty, HexGameBoard board) {
+        if ("hard".equalsIgnoreCase(difficulty)) {
+            return new AStarCatMovement(board);
+        } else {
+            return new BFSCatMovement(board);
+        }
+    }
+
+    @Override
+    public void onGameStateChanged(GameState<HexPosition> gameState) {
+        System.out.println("📊 Estado del juego actualizado: " + gameState.getStatus());
+    }
+    @Override
+    public void onGameEnded(GameState<HexPosition> gameState) {
+        String result = gameState.hasPlayerWon() ? "¡VICTORIA!" : "Derrota";
+        System.out.println("🏁 Juego terminado: " + result + " - Puntuación: " + gameState.calculateScore());
     }
 
     // Métodos abstractos requeridos por GameService
-    
     @Override
-    protected void initializeGame(GameState<HexPosition> gameState, GameBoard<HexPosition> gameBoard) {
-        // TODO: Inicializar el juego con estado y tablero
-        throw new UnsupportedOperationException("Los estudiantes deben implementar initializeGame");
+    public void initializeGame(GameState<HexPosition> gameState, GameBoard<HexPosition> gameBoard) {
+        ((HexGameState) gameState).setBoard((HexGameBoard) gameBoard);
     }
-    
     @Override
     public boolean isValidMove(String gameId, HexPosition position) {
-        // TODO: Validar si un movimiento es válido
-        throw new UnsupportedOperationException("Los estudiantes deben implementar isValidMove");
+        Optional<HexGameState> optState = gameRepository.findById(gameId);
+        return optState.filter(state -> isValidAdvancedMove(state, position, state.getPlayerId())).isPresent();
     }
-    
     @Override
     public Optional<HexPosition> getSuggestedMove(String gameId) {
-        // TODO: Obtener sugerencia de movimiento
-        throw new UnsupportedOperationException("Los estudiantes deben implementar getSuggestedMove");
+        Optional<HexGameState> optState = gameRepository.findById(gameId);
+        if (optState.isEmpty()) return Optional.empty();
+        HexGameState state = optState.get();
+        Object strategy = state.getCatMovementStrategy();
+        HexPosition catPos = state.getCatPosition();
+        if (strategy instanceof BFSCatMovement bfs) {
+            return bfs.getPossibleMoves(catPos).stream().findFirst();
+        } else if (strategy instanceof AStarCatMovement astar) {
+            return astar.getPossibleMoves(catPos).stream().findFirst();
+        } else {
+            return Optional.empty();
+        }
     }
-    
     @Override
-    protected HexPosition getTargetPosition(GameState<HexPosition> gameState) {
-        // TODO: Obtener posición objetivo para el gato
-        throw new UnsupportedOperationException("Los estudiantes deben implementar getTargetPosition");
+    public HexPosition getTargetPosition(GameState<HexPosition> gameState) {
+        HexGameBoard board = ((HexGameState) gameState).getBoard();
+        HexPosition catPos = ((HexGameState) gameState).getCatPosition();
+        return board.getAllBorderPositions().stream()
+                .min(Comparator.comparingDouble(catPos::distanceTo))
+                .orElse(catPos);
     }
-    
     @Override
     public Object getGameStatistics(String gameId) {
-        // TODO: Obtener estadísticas del juego
-        throw new UnsupportedOperationException("Los estudiantes deben implementar getGameStatistics");
+        return gameRepository.findById(gameId)
+                .map(GameState::getSerializableState)
+                .orElse(null);
     }
-} 
+}
